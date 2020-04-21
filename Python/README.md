@@ -1,15 +1,16 @@
-Install Python on RHEL Software Collection List(SCL)
+Install Python from RHEL Software Collection List(SCL)
+======================================================
 
 1. Installation
 
-'''
+```
 $ su -
 # yum install rh-python36
-'''
+```
 
 2. Run Python in interactive mode using scl enable
 
-'''
+```
 $ scl enable rh-python36 bash
 $ python3
 Python 3.6.3 (default, Oct  5 2017, 20:27:50)
@@ -19,10 +20,11 @@ Type "help", "copyright", "credits" or "license" for more information.
 Hello, Red Hat Developer Program World
 >>> quit()
 $
-'''
+```
+
 3. Python program can be run from the command line.
 
-'''
+```
 $vi hello.py
 
 #!/usr/bin/scl enable rh-python36 -- python3
@@ -36,4 +38,4 @@ print("Hello, Red Hat Developer Program World from",version)
 $ chmod +x hello.py
 $ ./hello.py
 Hello, Red Hat Developer Program World from Python 3.6
-'''
+```
