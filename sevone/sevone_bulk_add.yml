@@ -1,0 +1,86 @@
+---
+# =============================================================================
+# Ansible Playbook: Bulk Add Devices to SevOne
+# =============================================================================
+# Authenticates once, resolves group IDs once, then loops over a device list.
+# Place the reusable task file at:  tasks/sevone_device_upsert.yml
+# =============================================================================
+
+- name: SevOne | Bulk Device Onboarding
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    sevone_base_url: "https://{{ sevone_host }}/api/v3"
+    validate_certs: true
+
+    # Override this list via  -e @my_devices.yml
+    devices:
+      - name: "web01.corp.com"
+        ip: "10.0.1.50"
+        description: "Production web server"
+        snmp_community: "corp-ro"
+        snmp_version: 2
+        groups: ["Production Servers", "Linux"]
+
+      - name: "core-sw01.corp.com"
+        ip: "10.0.0.1"
+        description: "Core distribution switch"
+        snmp_community: "net-ro"
+        snmp_version: 2
+        groups: ["Network Infrastructure", "Cisco"]
+
+      - name: "db01.corp.com"
+        ip: "10.0.2.10"
+        description: "Primary database server"
+        snmp_community: "corp-ro"
+        snmp_version: 2
+        groups: ["Production Servers", "Databases"]
+
+  tasks:
+
+    - name: Auth | POST /users/signin
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/users/signin"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ sevone_user }}"
+          password: "{{ sevone_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _auth
+      no_log: true
+
+    - name: Auth | Store token
+      ansible.builtin.set_fact:
+        _token: "{{ _auth.json.token }}"
+
+    - name: Groups | GET /deviceGroups → build name→ID map
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/deviceGroups?page=0&size=1000"
+        method: GET
+        headers:
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _groups_resp
+
+    - name: Groups | Set lookup map fact
+      ansible.builtin.set_fact:
+        _group_map: >-
+          {{
+            _groups_resp.json.content | default([])
+            | items2dict(key_name='name', value_name='id')
+          }}
+
+    - name: Devices | Process each device
+      ansible.builtin.include_tasks: tasks/sevone_device_upsert.yml
+      loop: "{{ devices }}"
+      loop_control:
+        loop_var: _dev
+        label: "{{ _dev.name }} ({{ _dev.ip }})"

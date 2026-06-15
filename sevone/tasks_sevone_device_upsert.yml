@@ -1,0 +1,114 @@
+---
+# tasks/sevone_device_upsert.yml
+# -------------------------------------------------------
+# Reusable task file — included per-device by sevone_bulk_add.yml
+#
+# Expects loop var  _dev  with keys:
+#   name, ip, description, snmp_community, snmp_version, groups
+# Expects facts: _token, _group_map, sevone_base_url, validate_certs
+# -------------------------------------------------------
+
+- name: "{{ _dev.name }} | Check if device exists"
+  ansible.builtin.uri:
+    url: "{{ sevone_base_url }}/devices?page=0&size=100&filter={{ _dev.ip | urlencode }}"
+    method: GET
+    headers:
+      Accept: application/json
+      X-AUTH-TOKEN: "{{ _token }}"
+    validate_certs: "{{ validate_certs }}"
+    status_code: 200
+  register: _chk
+
+- name: "{{ _dev.name }} | Evaluate existing match"
+  ansible.builtin.set_fact:
+    _exists: >-
+      {{
+        _chk.json.content | default([])
+        | selectattr('ipAddress', 'equalto', _dev.ip)
+        | list | length > 0
+      }}
+    _dev_id: >-
+      {{
+        (
+          _chk.json.content | default([])
+          | selectattr('ipAddress', 'equalto', _dev.ip)
+          | list | first | default({})
+        ).id | default('')
+      }}
+
+- name: "{{ _dev.name }} | POST /devices → create (if new)"
+  ansible.builtin.uri:
+    url: "{{ sevone_base_url }}/devices"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+      X-AUTH-TOKEN: "{{ _token }}"
+    body_format: json
+    body:
+      name: "{{ _dev.name }}"
+      ipAddress: "{{ _dev.ip }}"
+      description: "{{ _dev.description | default('') }}"
+      allowedPollingIntervals: [60, 300]
+      pluginInfo:
+        - pluginName: "SNMP Plugin"
+          enabled: true
+          config:
+            community: "{{ _dev.snmp_community | default('public') }}"
+            version:   "{{ _dev.snmp_version   | default(2) }}"
+            port:      "{{ _dev.snmp_port       | default(161) }}"
+    validate_certs: "{{ validate_certs }}"
+    status_code: [200, 201]
+  register: _created
+  when: not (_exists | bool)
+
+- name: "{{ _dev.name }} | Capture new device ID"
+  ansible.builtin.set_fact:
+    _dev_id: "{{ _created.json.id }}"
+  when: not (_exists | bool)
+
+- name: "{{ _dev.name }} | Resolve group names → IDs"
+  ansible.builtin.set_fact:
+    _gids: >-
+      {{
+        _dev.groups
+        | map('extract', _group_map)
+        | select('defined')
+        | map('int')
+        | list
+      }}
+
+- name: "{{ _dev.name }} | GET current device state"
+  ansible.builtin.uri:
+    url: "{{ sevone_base_url }}/devices/{{ _dev_id }}"
+    method: GET
+    headers:
+      Accept: application/json
+      X-AUTH-TOKEN: "{{ _token }}"
+    validate_certs: "{{ validate_certs }}"
+    status_code: 200
+  register: _cur
+
+- name: "{{ _dev.name }} | PUT /devices/edit → assign groups"
+  ansible.builtin.uri:
+    url: "{{ sevone_base_url }}/devices/edit"
+    method: PUT
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+      X-AUTH-TOKEN: "{{ _token }}"
+    body_format: json
+    body:
+      id:          "{{ _dev_id | int }}"
+      name:        "{{ _cur.json.name }}"
+      ipAddress:   "{{ _cur.json.ipAddress }}"
+      description: "{{ _cur.json.description | default('') }}"
+      allowedPollingIntervals: >-
+        {{ _cur.json.allowedPollingIntervals | default([60, 300]) }}
+      groups: "{{ _gids }}"
+    validate_certs: "{{ validate_certs }}"
+    status_code: 200
+
+- name: "{{ _dev.name }} | Done"
+  ansible.builtin.debug:
+    msg: "✓ {{ _dev.name }} ({{ _dev.ip }}) mapped to groups {{ _dev.groups }} [IDs: {{ _gids }}]"

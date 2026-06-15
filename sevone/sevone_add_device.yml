@@ -1,0 +1,275 @@
+---
+# =============================================================================
+# Ansible Playbook: Add Device to SevOne and Map to Device Groups
+# =============================================================================
+# Flow:
+#   1. Authenticate  → obtain X-AUTH-TOKEN
+#   2. Check         → skip creation if device IP already exists
+#   3. Add device    → POST /api/v3/devices
+#   4. Resolve groups → map group names to IDs
+#   5. Edit device   → PUT /api/v3/devices/edit  (assigns device groups)
+#
+# Required variables (pass via -e, vars file, or inventory):
+#   sevone_host       - SevOne FQDN or IP  e.g. sevone.corp.com
+#   sevone_user       - API username
+#   sevone_password   - API password  (use ansible-vault in production)
+#   device_name       - Hostname / display name
+#   device_ip         - Management IP address
+#   device_groups     - List of existing device group names  e.g. ['Linux','Prod']
+#
+# Optional variables (defaults shown):
+#   device_type         SERVER | NETWORK          (default: SERVER)
+#   device_description  Free-text description      (default: "")
+#   snmp_community      SNMP community string      (default: public)
+#   snmp_version        1 | 2 | 3                  (default: 2)
+#   snmp_port           SNMP UDP port              (default: 161)
+#   validate_certs      Validate TLS certificates  (default: true)
+#
+# Usage examples:
+#   # Single device with inline vars
+#   ansible-playbook sevone_add_device.yml \
+#     -e "sevone_host=sevone.corp.com sevone_user=admin sevone_password=secret \
+#         device_name=web01 device_ip=10.0.1.50 \
+#         device_groups=['Production Servers','Linux']"
+#
+#   # Using a vars file (recommended)
+#   ansible-playbook sevone_add_device.yml \
+#     -e @vars/web01.yml --ask-vault-pass
+# =============================================================================
+
+- name: SevOne | Add Device and Assign to Device Groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    sevone_base_url: "https://{{ sevone_host }}/api/v3"
+    device_type: "SERVER"
+    device_description: ""
+    snmp_community: "public"
+    snmp_version: 2
+    snmp_port: 161
+    validate_certs: true
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Pre-flight checks
+    # -------------------------------------------------------------------------
+    - name: Pre-flight | Assert required variables are defined
+      ansible.builtin.assert:
+        that:
+          - sevone_host        is defined and sevone_host        | length > 0
+          - sevone_user        is defined and sevone_user        | length > 0
+          - sevone_password    is defined and sevone_password    | length > 0
+          - device_name        is defined and device_name        | length > 0
+          - device_ip          is defined and device_ip          | length > 0
+          - device_groups      is defined and device_groups      | length > 0
+        fail_msg: >-
+          Missing required variable(s). Supply: sevone_host, sevone_user,
+          sevone_password, device_name, device_ip, device_groups.
+
+    # -------------------------------------------------------------------------
+    # 2. Authenticate
+    # -------------------------------------------------------------------------
+    - name: Auth | POST /users/signin → obtain session token
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/users/signin"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+        body_format: json
+        body:
+          name: "{{ sevone_user }}"
+          password: "{{ sevone_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _auth_resp
+      no_log: true
+
+    - name: Auth | Store token as fact
+      ansible.builtin.set_fact:
+        _token: "{{ _auth_resp.json.token }}"
+
+    - name: Auth | Confirm authentication
+      ansible.builtin.debug:
+        msg: "Authenticated to SevOne at {{ sevone_host }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Check whether device already exists
+    # -------------------------------------------------------------------------
+    - name: Device | GET /devices → check for existing IP
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices?page=0&size=100&filter={{ device_ip | urlencode }}"
+        method: GET
+        headers:
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _search_resp
+
+    - name: Device | Evaluate search results
+      ansible.builtin.set_fact:
+        _matched: >-
+          {{
+            _search_resp.json.content | default([])
+            | selectattr('ipAddress', 'equalto', device_ip)
+            | list
+          }}
+
+    - name: Device | Set existence flag and device ID
+      ansible.builtin.set_fact:
+        _device_exists: "{{ _matched | length > 0 }}"
+        _device_id:     "{{ (_matched | first).id | default('') }}"
+
+    - name: Device | Report (already exists)
+      ansible.builtin.debug:
+        msg: >-
+          Device {{ device_ip }} already exists with ID {{ _device_id }}.
+          Skipping creation; will still update group assignments.
+      when: _device_exists | bool
+
+    # -------------------------------------------------------------------------
+    # 4. Create the device (only when it does not yet exist)
+    # -------------------------------------------------------------------------
+    - name: Device | POST /devices → create device
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices"
+        method: POST
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        body_format: json
+        body:
+          name: "{{ device_name }}"
+          ipAddress: "{{ device_ip }}"
+          description: "{{ device_description }}"
+          allowedPollingIntervals: [60, 300]
+          pluginInfo:
+            - pluginName: "SNMP Plugin"
+              enabled: true
+              config:
+                community: "{{ snmp_community }}"
+                version:   "{{ snmp_version }}"
+                port:      "{{ snmp_port }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 201]
+      register: _create_resp
+      when: not (_device_exists | bool)
+
+    - name: Device | Store newly created device ID
+      ansible.builtin.set_fact:
+        _device_id: "{{ _create_resp.json.id }}"
+      when: not (_device_exists | bool)
+
+    - name: Device | Confirm creation
+      ansible.builtin.debug:
+        msg: "Device '{{ device_name }}' created — ID: {{ _device_id }}"
+      when: not (_device_exists | bool)
+
+    # -------------------------------------------------------------------------
+    # 5. Resolve device group names → IDs
+    # -------------------------------------------------------------------------
+    - name: Groups | GET /deviceGroups → fetch full group list
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/deviceGroups?page=0&size=1000"
+        method: GET
+        headers:
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _groups_resp
+
+    - name: Groups | Build name → ID lookup map
+      ansible.builtin.set_fact:
+        _group_map: >-
+          {{
+            _groups_resp.json.content | default([])
+            | items2dict(key_name='name', value_name='id')
+          }}
+
+    - name: Groups | Resolve requested names to integer IDs
+      ansible.builtin.set_fact:
+        _group_ids: >-
+          {{
+            device_groups
+            | map('extract', _group_map)
+            | select('defined')
+            | map('int')
+            | list
+          }}
+
+    - name: Groups | Warn about any unresolved group names
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Group(s) not found in SevOne (check spelling/case):
+          {{ device_groups | difference(_group_map.keys() | list) }}
+      when: (device_groups | difference(_group_map.keys() | list)) | length > 0
+
+    - name: Groups | Fail if no valid groups resolved
+      ansible.builtin.fail:
+        msg: >-
+          None of the requested device_groups {{ device_groups }} exist in
+          SevOne. Verify group names are correct and already created.
+      when: _group_ids | length == 0
+
+    # -------------------------------------------------------------------------
+    # 6. Fetch current device object (needed to build a safe edit payload)
+    # -------------------------------------------------------------------------
+    - name: Device | GET /devices/{{ _device_id }} → read current state
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices/{{ _device_id }}"
+        method: GET
+        headers:
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _current_device
+
+    # -------------------------------------------------------------------------
+    # 7. Update device — assign to device groups via /api/v3/devices/edit
+    # -------------------------------------------------------------------------
+    - name: Device | PUT /devices/edit → assign device groups
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices/edit"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          X-AUTH-TOKEN: "{{ _token }}"
+        body_format: json
+        body:
+          # Carry forward existing fields to avoid accidentally clearing config
+          id:          "{{ _device_id | int }}"
+          name:        "{{ _current_device.json.name }}"
+          ipAddress:   "{{ _current_device.json.ipAddress }}"
+          description: "{{ _current_device.json.description | default('') }}"
+          allowedPollingIntervals: >-
+            {{ _current_device.json.allowedPollingIntervals | default([60, 300]) }}
+          # ← Key field: assigns the device to the resolved group IDs
+          groups: "{{ _group_ids }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _edit_resp
+
+    # -------------------------------------------------------------------------
+    # 8. Summary
+    # -------------------------------------------------------------------------
+    - name: Summary | Print onboarding result
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - " SevOne Device Onboarding — Complete"
+          - "============================================"
+          - "  SevOne Host  : {{ sevone_host }}"
+          - "  Device Name  : {{ device_name }}"
+          - "  Device IP    : {{ device_ip }}"
+          - "  Device ID    : {{ _device_id }}"
+          - "  Device Groups: {{ device_groups }}"
+          - "  Group IDs    : {{ _group_ids }}"
+          - "============================================"

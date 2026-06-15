@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# vars/web01.yml  — example variable file for sevone_add_device.yml
+# Encrypt sensitive values:  ansible-vault encrypt_string 'secret' --name sevone_password
+# =============================================================================
+
+# --- SevOne connection -------------------------------------------------------
+sevone_host: "sevone.corp.com"
+sevone_user: "admin"
+sevone_password: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  ...paste your vault-encrypted password here...
+
+validate_certs: true
+
+# --- Device details ----------------------------------------------------------
+device_name: "web01.corp.com"
+device_ip: "10.0.1.50"
+device_type: "SERVER"           # SERVER | NETWORK
+device_description: "Production Apache web server"
+
+# --- SNMP --------------------------------------------------------------------
+snmp_community: "corp-ro"
+snmp_version: 2
+snmp_port: 161
+
+# --- Device group mapping (names must already exist in SevOne) ---------------
+device_groups:
+  - "Production Servers"
+  - "Linux"
+  - "Web Tier"
+
+# =============================================================================
+# vars/core-sw01.yml  — network device example
+# =============================================================================
+# sevone_host: "sevone.corp.com"
+# sevone_user: "admin"
+# sevone_password: !vault | ...
+#
+# device_name: "core-sw01.corp.com"
+# device_ip: "10.0.0.1"
+# device_type: "NETWORK"
+# device_description: "Core distribution switch — Cisco Catalyst 9500"
+# snmp_community: "net-ro"
+# snmp_version: 2
+# snmp_port: 161
+#
+# device_groups:
+#   - "Network Infrastructure"
+#   - "Core Layer"
+#   - "Cisco"
