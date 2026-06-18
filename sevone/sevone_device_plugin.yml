@@ -1,0 +1,119 @@
+----
+    - name: SNMP | Build SNMPv2c credentials
+      ansible.builtin.set_fact:
+        _snmp_v2c_creds:
+          communityReadString:  "{{ snmp_read_community }}"
+          communityWriteString: "{{ snmp_write_community }}"
+      when: snmp_version == 'V2C'
+ 
+    - name: SNMP | Build SNMPv3 credentials
+      ansible.builtin.set_fact:
+        _snmp_v3_creds:
+          username:          "{{ snmp_v3_username }}"
+          password:          "{{ snmp_v3_password }}"
+          authenticationType: "{{ snmp_v3_auth_type }}"
+          encryptionType:    "{{ snmp_v3_enc_type }}"
+          encryptionKey:     "{{ snmp_v3_enc_key }}"
+          contextName:       "{{ snmp_v3_context }}"
+      when: snmp_version == 'V3'
+ 
+    # -------------------------------------------------------------------------
+    # 8. PUT /api/v3/devices/edit
+    #    Uses the exact EditDevice schema from the IBM API v8.1.0 spec:
+    #      body.commit                               — commit the change
+    #      body.deviceId                             — int32 device ID
+    #      body.device.config.*                      — device properties
+    #        name, ipAddress, altName, description,
+    #        peerId, pollFrequency, timezone, allowDelete
+    #      body.device.deviceGroups.deviceGroupIds[] — group IDs (overwrites)
+    #      body.device.plugins.snmp.*                — SNMP plugin config
+    #        enabled, port, versionPreference
+    #        credentialsSnmpV2c.communityReadString/communityWriteString
+    #        credentialsSnmpV3.username/password/authenticationType/
+    #                          encryptionType/encryptionKey/contextName
+    # -------------------------------------------------------------------------
+    - name: Device | PUT /devices/edit — update config, SNMP plugin, device groups (SNMPv2c)
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices/edit"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          Authorization: "bearer {{ _token }}"
+        body_format: json
+        body:
+          commit: true
+          deviceId: "{{ _device_id | int }}"
+          device:
+            config:
+              name:          "{{ device_name }}"
+              ipAddress:     "{{ device_ip }}"
+              altName:       "{{ device_alt_name }}"
+              description:   "{{ device_description }}"
+              peerId:        "{{ peer_id | int }}"
+              pollFrequency: "{{ poll_frequency | int }}"
+              timezone:      "{{ device_timezone }}"
+              allowDelete:   true
+            deviceGroups:
+              deviceGroupIds: "{{ _group_ids }}"
+            plugins:
+              snmp:
+                enabled:           "{{ snmp_enabled | bool }}"
+                port:              "{{ snmp_port | int }}"
+                versionPreference: "{{ snmp_version }}"
+                credentialsSnmpV2c:
+                  communityReadString:  "{{ snmp_read_community }}"
+                  communityWriteString: "{{ snmp_write_community }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _edited
+      when: snmp_version == 'V2C'
+ 
+    - name: Device | PUT /devices/edit — update config, SNMP plugin, device groups (SNMPv3)
+      ansible.builtin.uri:
+        url: "{{ sevone_base_url }}/devices/edit"
+        method: PUT
+        headers:
+          Content-Type: application/json
+          Accept: application/json
+          Authorization: "bearer {{ _token }}"
+        body_format: json
+        body:
+          commit: true
+          deviceId: "{{ _device_id | int }}"
+          device:
+            config:
+              name:          "{{ device_name }}"
+              ipAddress:     "{{ device_ip }}"
+              altName:       "{{ device_alt_name }}"
+              description:   "{{ device_description }}"
+              peerId:        "{{ peer_id | int }}"
+              pollFrequency: "{{ poll_frequency | int }}"
+              timezone:      "{{ device_timezone }}"
+              allowDelete:   true
+            deviceGroups:
+              deviceGroupIds: "{{ _group_ids }}"
+            plugins:
+              snmp:
+                enabled:           "{{ snmp_enabled | bool }}"
+                port:              "{{ snmp_port | int }}"
+                versionPreference: "{{ snmp_version }}"
+                credentialsSnmpV3:
+                  username:           "{{ snmp_v3_username }}"
+                  password:           "{{ snmp_v3_password }}"
+                  authenticationType: "{{ snmp_v3_auth_type }}"
+                  encryptionType:     "{{ snmp_v3_enc_type }}"
+                  encryptionKey:      "{{ snmp_v3_enc_key }}"
+                  contextName:        "{{ snmp_v3_context }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: 200
+      register: _edited_v3
+      when: snmp_version == 'V3'
+ 
+    - name: Device | Confirm EditDevice applied
+      ansible.builtin.debug:
+        msg: >-
+          Device '{{ device_name }}' (ID: {{ _device_id }}) fully configured —
+          SNMP {{ snmp_version }}, port {{ snmp_port }},
+          groups: {{ device_groups }} (IDs: {{ _group_ids }})
+ 
